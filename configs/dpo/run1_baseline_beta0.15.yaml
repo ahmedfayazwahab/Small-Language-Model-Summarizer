@@ -1,0 +1,104 @@
+# =============================================================================
+# DPO lever-test experiment — Qwen3-0.6B documentation summarizer
+# Baseline sits BETWEEN Run 7 (overfit: beta 0.1 / r16 / 2 epochs) and
+# Run 8 (underfit: beta 0.3 / r8 / 1 epoch — reward margin ~0, acc 0.50, held-out 0.7941).
+# Goal: DPO reward margin rises modestly above 0 and reward accuracy above 0.50
+# WITHOUT plateauing at 1.0, while held-out pass-rate holds >= 0.7941 (27/34).
+#
+# PROTOCOL: change exactly ONE lever per run vs. the Baseline (Run 1).
+# The changed line(s) are tagged  # <<< LEVER.
+# PATHS: initial_adapter_path = completed SFT adapters (confirmed loading in Run 8).
+# Set <RUN_WORKSPACE_ID> to the workspace assigned when you upload the 200/34 data.
+# =============================================================================
+# RUN 1 — BASELINE (moderate regularization). Anchor for the sweep.
+#   beta 0.15 | sigmoid | LoRA r8/alpha16/dropout0.10 | 1 epoch | wd 0.01
+#   Hypothesis: moderate KL lets DPO nudge the policy off the SFT reference
+#   without the runaway margin (Run 7) or the flat margin (Run 8).
+
+task_type: causal_lm_dpo
+
+model:
+  tokenizer_name_or_path: null
+  trust_remote_code: false
+  torch_dtype: bfloat16
+  device_map: auto
+  local_files_only: true
+  load_in_4bit: false
+  load_in_8bit: true
+  kbit_prepare_cast_to_float32: false
+  hf_token_env: HF_TOKEN
+  base_model_name_or_path: /models/base-models/qwen3-0-6b
+  initial_adapter_path: /workspace/f0eb0dbc7e1b03dfc9c870e231f6ba7f/output/adapters   # SFT adapters (starting policy)
+
+dataset:
+  validation_split: 0.1
+  seed: 42
+  max_seq_length: 4096
+  system_prompt: You are a documentation analyst responsible for creating a high level
+    summary of documentation that is provided to you. Ensure that you summarize the key
+    subject matter of the document and provide the key points of the most important
+    information conveyed in each document. Keep your summary to 150 words or less. /no_think
+  train_path: /workspace/<RUN_WORKSPACE_ID>/input/train.jsonl     # expanded 200-pair set
+  validation_path: null
+  test_path: /workspace/<RUN_WORKSPACE_ID>/input/eval.jsonl       # held-out 34-pair set
+
+dpo:
+  beta: 0.15
+  loss_type: sigmoid
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.10
+  bias: none
+  target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+  task_type: CAUSAL_LM
+
+trainer:
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler_type: cosine
+  optim: paged_adamw_8bit
+  logging_steps: 1
+  save_steps: 6
+  eval_steps: 6
+  save_total_limit: 2
+  max_grad_norm: 0.3
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  report_to:
+  - none
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  output_dir: /workspace/<RUN_WORKSPACE_ID>/output/adapters
+
+evaluation:
+  max_new_tokens: 320
+  assistant_prefix: ''
+  scorer:
+    type: embedding
+    embedding_pass_threshold: 0.75
+    embedding_review_threshold: 0.55
+
+export:
+  produce_merged_model: true
+  merged_output_dir: /workspace/<RUN_WORKSPACE_ID>/output/merged-model/weights
+  ollama:
+    output_dir: /workspace/<RUN_WORKSPACE_ID>/output/ollama
+
+training_family: finetuning
